@@ -2,7 +2,7 @@
 
 全球 Cloudflare 自动化工具（global-cf-auto）
 
-一个用于批量管理 Cloudflare Zone、导出 DNS、以及通过 Telegram 接收/触发操作的轻量级工具。适用于需要集中管理多个 Cloudflare 账号并通过机器人快速执行常用运维任务的场景。
+一个用于从CF读取域名并检测到期时间，以及批量管理 Cloudflare Zone、导出 DNS、以及通过 Telegram 接收/触发操作的轻量级工具。适用于需要集中管理多个 Cloudflare 账号并通过机器人快速执行常用运维任务的场景。
 
 **主要功能**
 
@@ -65,7 +65,7 @@ go build ./...
 - `/delete <domain.com>`：触发删除确认，会发送带按钮的确认消息。
 - `/setdns <domain> <type> <name> <content> [proxied] [ttl]`：创建或更新解析记录。
 - `/csv <label|all>`：导出指定账号或全部账号的 DNS 为 CSV 并发送文件。
-
+- `/originssl domain.com *`：生成源站15年的ssl证书,host 为domain.com 和  *.domain.com
 **开发与测试**
 
 - 运行所有测试：
@@ -81,11 +81,5 @@ go test ./...
 - 将 Telegram 发送器的实现抽离为可插拔模块（便于本地/远程部署）。
 - 在 `csv` 导出中支持更多字段和过滤（按类型、TTL、是否代理）。
 - 为长运行命令添加进度反馈与限流控制。
-
----
-
-如果你希望，我可以：
-
-- 把 README 翻译为英文并保持双语版本；
-- 在 README 中加入快速部署（systemd / Docker）示例；
-- 或将现有命令与配置示例补全到 README 中的代码片段里。
+- 将查询的到期时间缓存起来，到期前不用再次查询，提高效率
+- 将无法查询到的域名统一报出来
