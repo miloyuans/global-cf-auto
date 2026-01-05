@@ -14,7 +14,6 @@ import (
 	"DomainC/telegram"
 )
 
-// test
 const (
 	expiringFile = "expiring_domains.txt"
 	failedFile   = "failed_domains.txt"
