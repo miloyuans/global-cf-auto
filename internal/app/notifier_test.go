@@ -79,6 +79,14 @@ func (f *fakeCF) UpsertDNSRecord(ctx context.Context, account config.CF, domain 
 func (f *fakeCF) ListZones(ctx context.Context, account config.CF) ([]cfclient.ZoneDetail, error) {
 	return nil, nil
 }
+
+func (f *fakeCF) CreateOriginCertificate(ctx context.Context, account config.CF, hostnames []string) (cfclient.OriginCert, error) {
+	return cfclient.OriginCert{}, nil
+}
+func (f *fakeCF) ListOriginCACertificates(ctx context.Context, account config.CF) ([]cfclient.OriginCACertInfo, error) {
+	return nil, nil
+}
+
 func TestNotifierSendsAlertsAndDeletes(t *testing.T) {
 	sender := &fakeSender{}
 	cf := &fakeCF{}

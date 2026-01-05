@@ -2,6 +2,11 @@ package cfclient
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,6 +32,23 @@ type ZoneDetail struct {
 	Status      string
 	Paused      bool
 }
+type OriginCert struct {
+	ID             string
+	CertificatePEM string
+	PrivateKeyPEM  string
+	CSRPEM         string
+	Hostnames      []string
+	RequestType    string
+	RequestedDays  int
+	ExpiresOn      time.Time
+}
+type OriginCACertInfo struct {
+	ID          string
+	Hostnames   []string
+	ExpiresOn   time.Time
+	RevokedAt   *time.Time
+	RequestType string
+}
 
 // Client 定义了 Cloudflare 相关操作的抽象接口
 type Client interface {
@@ -38,6 +60,8 @@ type Client interface {
 	CreateZone(ctx context.Context, account config.CF, domain string) (ZoneDetail, error)
 	UpsertDNSRecord(ctx context.Context, account config.CF, domain string, params DNSRecordParams) (cloudflare.DNSRecord, error)
 	ListZones(ctx context.Context, acc config.CF) ([]ZoneDetail, error)
+	CreateOriginCertificate(ctx context.Context, account config.CF, hostnames []string) (OriginCert, error)
+	ListOriginCACertificates(ctx context.Context, account config.CF) ([]OriginCACertInfo, error)
 }
 
 type apiClient struct{}
@@ -396,6 +420,142 @@ func (c *apiClient) ListZones(ctx context.Context, account config.CF) ([]ZoneDet
 			NameServers: z.NameServers,
 			Status:      z.Status,
 			Paused:      z.Paused,
+		})
+	}
+	return out, nil
+}
+
+func (c *apiClient) CreateOriginCertificate(ctx context.Context, account config.CF, hostnames []string) (OriginCert, error) {
+
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	hostnames = normalizeHostnames(hostnames)
+	if len(hostnames) == 0 {
+		return OriginCert{}, fmt.Errorf("hostnames 不能为空")
+	}
+
+	api, err := cloudflare.NewWithAPIToken(account.APIToken)
+	if err != nil {
+		return OriginCert{}, fmt.Errorf(
+			"初始化 Cloudflare 客户端失败 [%s]: %v",
+			account.Label, err,
+		)
+	}
+
+	// 1. 生成 RSA 私钥
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return OriginCert{}, fmt.Errorf("生成私钥失败: %v", err)
+	}
+
+	// 2. 生成 CSR（SAN = hostnames）
+	csrPEM, err := buildCSRPEM(priv, hostnames)
+	if err != nil {
+		return OriginCert{}, err
+	}
+
+	// 3. 调用 CreateOriginCACertificate（⚠️ 用你这个 struct）
+	req := cloudflare.CreateOriginCertificateParams{
+		CSR:             csrPEM,
+		Hostnames:       hostnames,
+		RequestType:     "origin-rsa",
+		RequestValidity: 5475, // 15 年
+	}
+
+	cert, err := api.CreateOriginCACertificate(ctx, req)
+	if err != nil {
+		return OriginCert{}, fmt.Errorf("创建 Origin CA 证书失败: %v", err)
+	}
+
+	// 4. 私钥 PEM
+	keyPEM, err := encodeRSAPrivateKeyPEM(priv)
+	if err != nil {
+		return OriginCert{}, err
+	}
+
+	return OriginCert{
+		ID:             cert.ID,
+		CertificatePEM: cert.Certificate,
+		PrivateKeyPEM:  keyPEM,
+		CSRPEM:         csrPEM,
+		Hostnames:      cert.Hostnames,
+		RequestType:    cert.RequestType,
+		RequestedDays:  cert.RequestValidity,
+		ExpiresOn:      cert.ExpiresOn,
+	}, nil
+}
+func normalizeHostnames(in []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, h := range in {
+		h = strings.TrimSpace(strings.ToLower(h))
+		if h == "" {
+			continue
+		}
+		if _, ok := seen[h]; ok {
+			continue
+		}
+		seen[h] = struct{}{}
+		out = append(out, h)
+	}
+	return out
+}
+
+func buildCSRPEM(priv *rsa.PrivateKey, hostnames []string) (string, error) {
+	// CN 用第一个 hostname（只是展示用途，实际以 SAN 为准）
+	cn := hostnames[0]
+
+	tpl := &x509.CertificateRequest{
+		Subject: pkix.Name{
+			CommonName: cn,
+		},
+		DNSNames: hostnames,
+	}
+
+	der, err := x509.CreateCertificateRequest(rand.Reader, tpl, priv)
+	if err != nil {
+		return "", fmt.Errorf("生成 CSR 失败: %v", err)
+	}
+
+	block := &pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}
+	return string(pem.EncodeToMemory(block)), nil
+}
+
+func encodeRSAPrivateKeyPEM(priv *rsa.PrivateKey) (string, error) {
+	der := x509.MarshalPKCS1PrivateKey(priv)
+	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}
+	return string(pem.EncodeToMemory(block)), nil
+}
+func (c *apiClient) ListOriginCACertificates(ctx context.Context, account config.CF) ([]OriginCACertInfo, error) {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	api, err := cloudflare.NewWithAPIToken(account.APIToken)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 Cloudflare 客户端失败 [%s]: %v", account.Label, err)
+	}
+
+	// params 结构你本地 SDK 里一定有，不同版本字段略不同：
+	// 一般至少可空 struct 或带分页；不行就传 cloudflare.ListOriginCertificatesParams{}
+	certs, err := api.ListOriginCACertificates(ctx, cloudflare.ListOriginCertificatesParams{})
+	if err != nil {
+		return nil, fmt.Errorf("列出 Origin CA 证书失败 [%s]: %v", account.Label, err)
+	}
+
+	out := make([]OriginCACertInfo, 0, len(certs))
+	for _, c := range certs {
+		var revoked *time.Time
+		if !c.RevokedAt.IsZero() {
+			t := c.RevokedAt
+			revoked = &t
+		}
+		out = append(out, OriginCACertInfo{
+			ID:          c.ID,
+			Hostnames:   c.Hostnames,
+			ExpiresOn:   c.ExpiresOn,
+			RevokedAt:   revoked,
+			RequestType: c.RequestType,
 		})
 	}
 	return out, nil
