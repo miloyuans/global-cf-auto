@@ -12,6 +12,8 @@ type Config struct {
 	Telegram           Telegram `yaml:"telegram"`
 	CloudflareAccounts []CF     `yaml:"cloudflareAccounts"`
 	DomainFiles        []string `yaml:"domainFiles"`
+
+	AWSTargets map[string]AWSTarget `yaml:"awsTargets"`
 }
 
 type Telegram struct {
@@ -24,6 +26,16 @@ type CF struct {
 	Email     string `yaml:"email"`
 	APIToken  string `yaml:"apiToken"`
 	AccountID string `yaml:"accountID"`
+}
+type AWSCreds struct {
+	AccessKeyID     string `yaml:"accessKeyId"`
+	SecretAccessKey string `yaml:"secretAccessKey"`
+	SessionToken    string `yaml:"sessionToken"`
+}
+
+type AWSTarget struct {
+	Region string   `yaml:"region"`
+	Creds  AWSCreds `yaml:"creds"`
 }
 
 var Cfg Config

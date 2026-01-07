@@ -5,16 +5,19 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"DomainC/config"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awscfg "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/acm"
 )
 
 func (h *CommandHandler) handleOriginSSLCommand(args []string) {
-	// 必须 2 个参数：domain + "*"
-	if len(args) < 2 {
+	if len(args) < 3 {
 		h.sendText(h.originSSLPromptText())
 		return
 	}
@@ -26,7 +29,11 @@ func (h *CommandHandler) handleOriginSSLCommand(args []string) {
 		h.sendText(h.originSSLPromptText())
 		return
 	}
-
+	awsAlias := strings.TrimSpace(args[2])
+	if awsAlias == "" {
+		h.sendText(h.originSSLPromptText())
+		return
+	}
 	// 必须第二个参数是 "*"
 	if mode != "*" {
 		h.sendText("参数错误：必须使用 *\n\n" + h.originSSLPromptText())
@@ -50,6 +57,20 @@ func (h *CommandHandler) handleOriginSSLCommand(args []string) {
 		h.sendText(fmt.Sprintf("创建源站证书失败: %v", err))
 		return
 	}
+
+	target, ok := config.Cfg.AWSTargets[awsAlias]
+	if !ok {
+		h.sendText(fmt.Sprintf("未知 AWS 目标别名：%s\n\n%s", awsAlias, h.originSSLPromptText()))
+		return
+	}
+
+	acmArn, err := importToACM(ctx, target, cert.CertificatePEM, cert.PrivateKeyPEM)
+	if err != nil {
+		h.sendText(fmt.Sprintf("证书已生成，但导入 ACM 失败（%s/%s）: %v", awsAlias, target.Region, err))
+		return
+	}
+	h.sendText(fmt.Sprintf("CF源站证书生成并已导入 ACM：%s\nTarget: %s (%s)\nARN: %s\n账号：%s",
+		domain, awsAlias, target.Region, acmArn, acc.Label))
 
 	// 输出内容（证书 + 私钥 + CSR）
 	var out bytes.Buffer
@@ -96,29 +117,29 @@ func (h *CommandHandler) handleOriginSSLCommand(args []string) {
 	}()
 
 	// 私钥文件尽量收紧权限
-	_ = os.Chmod(tmpPath, 0600)
+	// _ = os.Chmod(tmpPath, 0600)
 
-	if _, err := tmpFile.Write(out.Bytes()); err != nil {
-		h.sendText(fmt.Sprintf("写入临时文件失败: %v", err))
-		return
-	}
-	_ = tmpFile.Sync()
+	// if _, err := tmpFile.Write(out.Bytes()); err != nil {
+	// 	h.sendText(fmt.Sprintf("写入临时文件失败: %v", err))
+	// 	return
+	// }
+	// _ = tmpFile.Sync()
 
-	finalPath := filepath.Join(os.TempDir(), filename)
-	_ = os.Rename(tmpPath, finalPath)
-	tmpPath = finalPath
+	// finalPath := filepath.Join(os.TempDir(), filename)
+	// _ = os.Rename(tmpPath, finalPath)
+	// tmpPath = finalPath
 
-	caption := "🔐 Cloudflare Origin CA 证书（含私钥）"
-	if !cert.ExpiresOn.IsZero() {
-		caption = fmt.Sprintf("🔐 Cloudflare Origin CA 证书（含私钥）\n到期：%s", cert.ExpiresOn.Format(time.RFC3339))
-	}
+	// caption := "🔐 Cloudflare Origin CA 证书（含私钥）"
+	// if !cert.ExpiresOn.IsZero() {
+	// 	caption = fmt.Sprintf("🔐 Cloudflare Origin CA 证书（含私钥）\n到期：%s", cert.ExpiresOn.Format(time.RFC3339))
+	// }
 
-	if err := h.Sender.SendDocumentPath(context.Background(), tmpPath, caption); err != nil {
-		h.sendText(fmt.Sprintf("发送证书文件失败: %v", err))
-		return
-	}
+	// if err := h.Sender.SendDocumentPath(context.Background(), tmpPath, caption); err != nil {
+	// 	h.sendText(fmt.Sprintf("发送证书文件失败: %v", err))
+	// 	return
+	// }
 
-	h.sendText(fmt.Sprintf("✅ 源站证书生成完成：%s（账号：%s）", domain, acc.Label))
+	// h.sendText(fmt.Sprintf("✅ 源站证书生成完成：%s（账号：%s）", domain, acc.Label))
 }
 
 // 提示文本
@@ -130,9 +151,9 @@ func (h *CommandHandler) originSSLPromptText() string {
 	var sb strings.Builder
 	sb.WriteString("生成 Cloudflare Origin CA 源站证书（15年）。\n\n")
 	sb.WriteString("命令必须带 \\*：\n")
-	sb.WriteString("/originssl <主域名> \\*\n\n")
+	sb.WriteString("/originssl <主域名> \\* <aws-alias>\n\n")
 	sb.WriteString("示例：\n")
-	sb.WriteString("/originssl example.com \\*\n\n")
+	sb.WriteString("/originssl example.com \\* us-aws\n\n")
 	sb.WriteString("说明：该命令固定签发 example.com + \\*.example.com\n\n")
 	sb.WriteString("可用账号：\n")
 	for _, a := range h.Accounts {
@@ -140,6 +161,13 @@ func (h *CommandHandler) originSSLPromptText() string {
 			continue
 		}
 		sb.WriteString("- " + a.Label + "\n")
+	}
+	sb.WriteString("\n可用 AWS 目标：\n")
+	for name, t := range config.Cfg.AWSTargets {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("- %s (%s)\n", name, t.Region))
 	}
 	return sb.String()
 }
@@ -187,4 +215,43 @@ func sanitizeFilename(name string) string {
 	name = strings.ReplaceAll(name, "\\", "_")
 	name = strings.ReplaceAll(name, ":", "_")
 	return name
+}
+func importToACM(ctx context.Context, target config.AWSTarget, certPEM, keyPEM string) (string, error) {
+	if strings.TrimSpace(target.Region) == "" {
+		return "", fmt.Errorf("aws target region 为空")
+	}
+	if strings.TrimSpace(target.Creds.AccessKeyID) == "" || strings.TrimSpace(target.Creds.SecretAccessKey) == "" {
+		return "", fmt.Errorf("aws target creds 不完整")
+	}
+
+	cfg, err := awscfg.LoadDefaultConfig(
+		ctx,
+		awscfg.WithRegion(target.Region),
+		awscfg.WithCredentialsProvider(
+			aws.NewCredentialsCache(
+				credentials.NewStaticCredentialsProvider(
+					target.Creds.AccessKeyID,
+					target.Creds.SecretAccessKey,
+					target.Creds.SessionToken,
+				),
+			),
+		),
+	)
+	if err != nil {
+		return "", fmt.Errorf("load aws config: %w", err)
+	}
+
+	client := acm.NewFromConfig(cfg)
+
+	certBody := []byte(strings.TrimSpace(certPEM) + "\n")
+	privKey := []byte(strings.TrimSpace(keyPEM) + "\n")
+
+	out, err := client.ImportCertificate(ctx, &acm.ImportCertificateInput{
+		Certificate: certBody,
+		PrivateKey:  privKey,
+	})
+	if err != nil {
+		return "", fmt.Errorf("acm import certificate: %w", err)
+	}
+	return *out.CertificateArn, nil
 }
