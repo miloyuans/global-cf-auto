@@ -14,7 +14,7 @@ func (h *CommandHandler) handleGetNSCommand(args []string) {
 	domain := strings.ToLower(args[0])
 
 	if account, zone, err := h.findZone(domain); err == nil {
-		h.sendText(fmt.Sprintf("域名 %s 已在账号 %s 下，NS: %s", zone.Name, account.Label, strings.Join(zone.NameServers, ", ")))
+		h.sendText(fmt.Sprintf("域名 %s 已在账号 %s 下,无需再次添加到CF,NS: %s", zone.Name, account.Label, strings.Join(zone.NameServers, "\\n")))
 		return
 	}
 
@@ -30,5 +30,5 @@ func (h *CommandHandler) handleGetNSCommand(args []string) {
 		return
 	}
 
-	h.sendText(fmt.Sprintf("已将 %s 添加到账号 %s，NS 请设置为: %s", zone.Name, account.Label, strings.Join(zone.NameServers, ", ")))
+	h.sendText(fmt.Sprintf("域名 %s 已经加到账号 %s，NS 请设置为: %s", zone.Name, account.Label, strings.Join(zone.NameServers, "\\n ")))
 }

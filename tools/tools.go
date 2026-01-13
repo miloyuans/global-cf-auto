@@ -123,11 +123,12 @@ func CheckWhois(domain string) string {
 	}
 
 	// 找不到就给个“截断版摘要”，避免 UI/日志把你整段截断得更难看
-	// snippet := result
-	// if len(snippet) > 800 {
-	// 	snippet = snippet[:800] + " ... (truncated)"
-	// }
-	return fmt.Sprintf("%s: WHOIS未找到明确的到期字段，原文摘要: %s", domain, result)
+
+	snippet := result
+	if len(snippet) > 800 {
+		snippet = snippet[:800] + " ... (truncated)"
+	}
+	return fmt.Sprintf("%s: WHOIS未找到明确的到期字段，原文摘要: %s", domain, snippet)
 }
 
 func DaysUntilExpiry(expiry string) (int, error) {
