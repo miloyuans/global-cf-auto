@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -59,8 +60,20 @@ func NewBotSender(token string, chatID int64, retryTimes int, rateInterval time.
 	return sender, nil
 }
 
+const tgMaxLen = 3800
+
 func (s *BotSender) Send(ctx context.Context, msg string) error {
-	return s.sendWithMarkup(ctx, tgbotapi.NewMessage(s.chatID, msg))
+	parts := splitTelegramText(msg, tgMaxLen)
+	for i, p := range parts {
+		// 可选：给多段加个序号，方便看
+		if len(parts) > 1 {
+			p = fmt.Sprintf("(%d/%d)\n%s", i+1, len(parts), p)
+		}
+		if err := s.sendWithMarkup(ctx, tgbotapi.NewMessage(s.chatID, p)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *BotSender) SendWithButtons(ctx context.Context, msg string, buttons [][]Button) error {
@@ -76,9 +89,41 @@ func (s *BotSender) SendWithButtons(ctx context.Context, msg string, buttons [][
 	message.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
 	return s.sendWithMarkup(ctx, message)
 }
+func splitTelegramText(s string, limit int) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return []string{""}
+	}
+	if len(s) <= limit {
+		return []string{s}
+	}
 
+	var out []string
+	for len(s) > limit {
+		// 1) 优先在 limit 以内找最后一个换行
+		cut := strings.LastIndex(s[:limit], "\n")
+		// 2) 换行不好用，再找空格
+		if cut < limit/3 {
+			cut = strings.LastIndex(s[:limit], " ")
+		}
+		// 3) 还是没有就硬切
+		if cut <= 0 {
+			cut = limit
+		}
+
+		part := strings.TrimSpace(s[:cut])
+		if part != "" {
+			out = append(out, part)
+		}
+		s = strings.TrimSpace(s[cut:])
+	}
+	if s != "" {
+		out = append(out, s)
+	}
+	return out
+}
 func (s *BotSender) sendWithMarkup(ctx context.Context, msg tgbotapi.MessageConfig) error {
-	msg.ParseMode = "Markdown"
+
 	for attempt := 0; attempt <= s.retryTimes; attempt++ {
 		select {
 		case <-ctx.Done():

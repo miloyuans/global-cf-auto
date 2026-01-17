@@ -23,7 +23,7 @@ func DaysUntil(expiry string) (int, error) {
 	return tools.DaysUntilExpiry(expiry)
 }
 
-func CheckWhois(domain string) string {
+func CheckWhois(domain string) (string, bool) {
 	return tools.CheckWhois(domain)
 }
 

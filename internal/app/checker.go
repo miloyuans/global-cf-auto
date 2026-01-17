@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -23,13 +22,18 @@ type ExpiryCheckerService struct {
 	QueryTimeout time.Duration
 }
 
-func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.DomainSource) ([]domain.DomainSource, []domain.FailureRecord, error) {
+func (c *ExpiryCheckerService) Check(
+	ctx context.Context,
+	domains []domain.DomainSource,
+) ([]domain.DomainSource, []domain.FailureRecord, error) {
+
 	if c.Whois == nil {
 		return nil, nil, ErrMissingDependencies
 	}
 	if c.AlertWithin == 0 {
 		c.AlertWithin = 24 * time.Hour
 	}
+
 	var ticker *time.Ticker
 	if c.RateLimit > 0 {
 		ticker = time.NewTicker(c.RateLimit)
@@ -38,11 +42,17 @@ func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.Domai
 
 	var expiring []domain.DomainSource
 	var failures []domain.FailureRecord
+
 	for i, ds := range domains {
+
+		// 已有到期时间，直接解析
 		if expiryStr := strings.TrimSpace(ds.Expiry); expiryStr != "" {
 			expiryTime, err := time.Parse("2006-01-02", expiryStr)
 			if err != nil {
-				failures = append(failures, domain.FailureRecord{Domain: ds.Domain, Source: ds.Source, Reason: fmt.Sprintf("解析失败: %v", err)})
+				failures = append(failures, domain.FailureRecord{
+					Domain: ds.Domain,
+					Source: ds.Source,
+				})
 				continue
 			}
 
@@ -53,6 +63,7 @@ func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.Domai
 			continue
 		}
 
+		// 限速
 		if i > 0 && ticker != nil {
 			select {
 			case <-ctx.Done():
@@ -61,6 +72,7 @@ func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.Domai
 			}
 		}
 
+		// 查询 WHOIS / RDAP（由 client 决定返回什么）
 		lookupCtx := ctx
 		cancel := func() {}
 		if c.QueryTimeout > 0 {
@@ -68,21 +80,42 @@ func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.Domai
 		}
 		result, err := c.Whois.Query(lookupCtx, ds.Domain)
 		cancel()
+
 		if err != nil {
-			log.Printf("WHOIS 查询失败 (%s): %v", ds.Domain, err)
-			failures = append(failures, domain.FailureRecord{Domain: ds.Domain, Source: ds.Source, Reason: err.Error()})
+			// 只记录失败域名；原因不落库（日志可留最小信息）
+			log.Printf("[expiry] lookup_failed domain=%s", ds.Domain)
+			failures = append(failures, domain.FailureRecord{
+				Domain: ds.Domain,
+				Source: ds.Source,
+			})
+			continue
+		}
+
+		if t, err := time.Parse("2006-01-02", strings.TrimSpace(result)); err == nil {
+			if time.Until(t) <= c.AlertWithin {
+				ds.Expiry = t.Format("2006-01-02")
+				expiring = append(expiring, ds)
+			}
 			continue
 		}
 
 		expiry, ok := tools.ExtractExpiry(result)
 		if !ok {
-			failures = append(failures, domain.FailureRecord{Domain: ds.Domain, Source: ds.Source, Reason: truncateReason("未找到到期时间字段: " + result)})
+			log.Printf("[expiry] extract_failed domain=%s", ds.Domain)
+			failures = append(failures, domain.FailureRecord{
+				Domain: ds.Domain,
+				Source: ds.Source,
+			})
 			continue
 		}
+
 		expiryTime, err := time.Parse("2006-01-02", expiry)
 		if err != nil {
-			log.Printf("解析到期时间失败 [%s]: %v", ds.Domain, err)
-			failures = append(failures, domain.FailureRecord{Domain: ds.Domain, Source: ds.Source, Reason: fmt.Sprintf("解析失败: %v", err)})
+			log.Printf("[expiry] parse_failed domain=%s", ds.Domain)
+			failures = append(failures, domain.FailureRecord{
+				Domain: ds.Domain,
+				Source: ds.Source,
+			})
 			continue
 		}
 
@@ -100,15 +133,6 @@ func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.Domai
 			return expiring, failures, err
 		}
 	}
-	return expiring, failures, nil
-}
 
-func truncateReason(reason string) string {
-	// 信息太常进行截断，先不启用
-	// const maxLen = 200
-	// if len(reason) <= maxLen {
-	// 	return reason
-	// }
-	// return reason[:maxLen] + "..."
-	return reason
+	return expiring, failures, nil
 }

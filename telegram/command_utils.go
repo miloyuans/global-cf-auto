@@ -53,13 +53,17 @@ func (h *CommandHandler) deleteZone(domain string) (*config.CF, error) {
 	return nil, lastErr
 }
 
-// defaultAccount 随机返回一个 Cloudflare 账号配置
 func (h *CommandHandler) defaultAccount() *config.CF {
-	if len(h.Accounts) == 0 {
+	n := len(h.Accounts)
+	if n == 0 {
 		return nil
 	}
-	idx := rand.Intn(len(h.Accounts))
-	return &h.Accounts[idx]
+
+	if n >= 2 {
+		idx := rand.Intn(2)
+		return &h.Accounts[idx]
+	}
+	return &h.Accounts[0]
 }
 
 func (h *CommandHandler) sendText(msg string) {

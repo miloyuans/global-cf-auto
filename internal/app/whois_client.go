@@ -2,20 +2,30 @@ package app
 
 import (
 	"context"
+	"errors"
 
 	"DomainC/tools"
 )
 
 type DefaultWhoisClient struct{}
 
+var ErrWhoisExpiryNotFound = errors.New("expiry lookup failed")
+
 func (DefaultWhoisClient) Query(ctx context.Context, domain string) (string, error) {
 	type result struct {
 		data string
 		err  error
 	}
+
 	ch := make(chan result, 1)
+
 	go func() {
-		ch <- result{data: tools.CheckWhois(domain)}
+		expiry, ok := tools.CheckWhois(domain)
+		if !ok {
+			ch <- result{data: "", err: ErrWhoisExpiryNotFound}
+			return
+		}
+		ch <- result{data: expiry, err: nil}
 	}()
 
 	select {
