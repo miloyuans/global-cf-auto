@@ -8,4 +8,8 @@ type Repository interface {
 	SaveExpiring(domains []DomainSource) error
 	// SaveFailures 写入解析失败的域名列表，便于排查与人工处理。
 	SaveFailures(failures []FailureRecord) error
+	// 从缓存文件读
+	LoadExpiryCache() ([]DomainSource, error)
+	// 覆盖写回缓存文件
+	SaveExpiryCache(domains []DomainSource) error
 }

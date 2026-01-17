@@ -14,7 +14,7 @@ func TestLoadSourcesParsesMetadata(t *testing.T) {
 		t.Fatalf("failed to write temp domain file: %v", err)
 	}
 
-	repo := NewFileRepository([]string{filePath}, "", "")
+	repo := NewFileRepository([]string{filePath}, "", "", "")
 	sources, err := repo.LoadSources()
 	if err != nil {
 		t.Fatalf("LoadSources returned error: %v", err)

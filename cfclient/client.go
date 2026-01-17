@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -246,32 +247,8 @@ func (c *apiClient) PauseDomain(ctx context.Context, account config.CF, domain s
 	return nil
 }
 
-// ListDNSRecords 列出域名 DNS 记录
-// func (c *apiClient) ListDNSRecords(ctx context.Context, account config.CF, domain string) ([]cloudflare.DNSRecord, error) {
-// 	ctx, cancel := ensureTimeout(ctx)
-// 	defer cancel()
-
-// 	api, err := cloudflare.NewWithAPIToken(account.APIToken)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("初始化客户端失败 [%s]: %v", account.Label, err)
-// 	}
-
-// 	zones, err := api.ListZonesContext(ctx, cloudflare.WithZoneFilters(domain, "", ""))
-// 	if err != nil {
-// 		return nil, fmt.Errorf("获取 Zone 失败: %v", err)
-// 	}
-// 	if len(zones.Result) == 0 {
-// 		return nil, fmt.Errorf("%w: %s", ErrZoneNotFound, domain)
-// 	}
-
-//		zoneID := zones.Result[0].ID
-//		records, _, err := api.ListDNSRecords(ctx, cloudflare.ZoneIdentifier(zoneID), cloudflare.ListDNSRecordsParams{})
-//		if err != nil {
-//			return nil, fmt.Errorf("列出 DNS 记录失败: %v", err)
-//		}
-//		return records, nil
-//	}
 func (c *apiClient) ListDNSRecords(ctx context.Context, account config.CF, domain string) ([]cloudflare.DNSRecord, error) {
+	log.Printf("[ListDNSRecords] start domain=%q account=%q", domain, account.Label)
 	ctx, cancel := ensureTimeout(ctx)
 	defer cancel()
 
@@ -280,13 +257,8 @@ func (c *apiClient) ListDNSRecords(ctx context.Context, account config.CF, domai
 		return nil, fmt.Errorf("初始化客户端失败 [%s]: %v", account.Label, err)
 	}
 
-	// 1) normalize：去协议/路径/末尾点
+	//1) 规范化 domain
 	domain = strings.TrimSpace(strings.ToLower(domain))
-	domain = strings.TrimPrefix(domain, "http://")
-	domain = strings.TrimPrefix(domain, "https://")
-	if i := strings.IndexByte(domain, '/'); i >= 0 {
-		domain = domain[:i]
-	}
 	domain = strings.TrimSuffix(domain, ".")
 	if domain == "" {
 		return nil, fmt.Errorf("%w: empty domain", ErrZoneNotFound)
@@ -295,6 +267,7 @@ func (c *apiClient) ListDNSRecords(ctx context.Context, account config.CF, domai
 	// 2) 生成候选 zone（支持子域输入）
 	parts := strings.Split(domain, ".")
 	cands := []string{domain}
+	log.Printf("[ListDNSRecords] candidates=%v", cands)
 	if len(parts) >= 2 {
 		cands = cands[:0]
 		for i := 0; i <= len(parts)-2; i++ {
@@ -307,6 +280,8 @@ func (c *apiClient) ListDNSRecords(ctx context.Context, account config.CF, domai
 	var matchedName string
 
 	for _, cand := range cands {
+		log.Printf("[ListDNSRecords] try cand=%q", cand)
+
 		zones, err := api.ListZonesContext(ctx, cloudflare.WithZoneFilters(cand, "", ""))
 		if err != nil {
 			return nil, fmt.Errorf("获取 Zone 失败: %v", err)
@@ -330,6 +305,7 @@ func (c *apiClient) ListDNSRecords(ctx context.Context, account config.CF, domai
 		}
 		break
 	}
+	log.Printf("[ListDNSRecords] zone matched name=%q id=%q", matchedName, zoneID)
 
 	if zoneID == "" {
 		return nil, fmt.Errorf("%w: %s", ErrZoneNotFound, domain)
@@ -339,6 +315,7 @@ func (c *apiClient) ListDNSRecords(ctx context.Context, account config.CF, domai
 	if err != nil {
 		return nil, fmt.Errorf("列出 DNS 记录失败(Zone=%s, ID=%s): %v", matchedName, zoneID, err)
 	}
+	log.Printf("[ListDNSRecords] records=%d", len(records))
 	return records, nil
 }
 

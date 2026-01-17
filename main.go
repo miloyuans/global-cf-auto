@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	expiringFile = "expiring_domains.txt"
-	failedFile   = "failed_domains.txt"
+	expiringFile      = "expiring_domains.txt"
+	failedFile        = "failed_domains.txt"
+	expiryCacheTarget = "expiry_cache.txt"
 )
 
 func main() {
@@ -53,7 +54,7 @@ func main() {
 		}
 	}()
 
-	repository := domain.NewFileRepository(config.Cfg.DomainFiles, expiringFile, failedFile)
+	repository := domain.NewFileRepository(config.Cfg.DomainFiles, expiringFile, failedFile, expiryCacheTarget)
 	service := domain.NewService(cfClient, repository)
 
 	collector := &app.Collector{Service: service, Accounts: config.Cfg.CloudflareAccounts}
