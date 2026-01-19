@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	AlertDays          int      `yaml:"alertDays"`
-	Telegram           Telegram `yaml:"telegram"`
-	CloudflareAccounts []CF     `yaml:"cloudflareAccounts"`
-	DomainFiles        []string `yaml:"domainFiles"`
+	AlertDays          int         `yaml:"alertDays"`
+	Telegram           Telegram    `yaml:"telegram"`
+	CloudflareAccounts []CF        `yaml:"cloudflareAccounts"`
+	Registrars         []Registrar `yaml:"registrars"`
+	DomainFiles        []string    `yaml:"domainFiles"`
 
 	AWSTargets map[string]AWSTarget `yaml:"awsTargets"`
 }
@@ -26,6 +27,23 @@ type CF struct {
 	Email     string `yaml:"email"`
 	APIToken  string `yaml:"apiToken"`
 	AccountID string `yaml:"accountID"`
+}
+type Registrar struct {
+	Label     string           `yaml:"label"`
+	Type      string           `yaml:"type"`
+	Namecheap *NamecheapConfig `yaml:"namecheap"`
+	GoDaddy   *GoDaddyConfig   `yaml:"godaddy"`
+}
+
+type NamecheapConfig struct {
+	User     string `yaml:"user"`
+	APIKey   string `yaml:"apiKey"`
+	ClientIP string `yaml:"clientIP"`
+}
+
+type GoDaddyConfig struct {
+	APIKey    string `yaml:"apiKey"`
+	APISecret string `yaml:"apiSecret"`
 }
 type AWSCreds struct {
 	AccessKeyID     string `yaml:"accessKeyId"`

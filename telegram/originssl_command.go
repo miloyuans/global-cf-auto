@@ -151,9 +151,9 @@ func (h *CommandHandler) originSSLPromptText() string {
 	var sb strings.Builder
 	sb.WriteString("生成 Cloudflare Origin CA 源站证书（15年）。\n\n")
 	sb.WriteString("命令必须带 \\*：\n")
-	sb.WriteString("/originssl <主域名> \\* <aws-alias>\n\n")
+	sb.WriteString("/ssl <主域名> \\* <aws-alias>\n\n")
 	sb.WriteString("示例：\n")
-	sb.WriteString("/originssl example.com \\* us-aws\n\n")
+	sb.WriteString("/ssl example.com \\* us-aws\n\n")
 	sb.WriteString("说明：该命令固定签发 example.com + \\*.example.com\n\n")
 	sb.WriteString("可用账号：\n")
 	for _, a := range h.Accounts {

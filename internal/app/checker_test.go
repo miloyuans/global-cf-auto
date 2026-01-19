@@ -29,7 +29,12 @@ func (r *fakeRepo) SaveExpiring(domains []domain.DomainSource) error {
 	r.saved = append(r.saved, domains...)
 	return nil
 }
-
+func (r *fakeRepo) LoadExpiryCache() ([]domain.DomainSource, error) {
+	return nil, nil
+}
+func (r *fakeRepo) SaveExpiryCache(domains []domain.DomainSource) error {
+	return nil
+}
 func (r *fakeRepo) SaveFailures([]domain.FailureRecord) error { return nil }
 
 func TestExpiryCheckerFiltersByAlertWindow(t *testing.T) {

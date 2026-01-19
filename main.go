@@ -10,13 +10,15 @@ import (
 	"DomainC/config"
 	"DomainC/domain"
 	"DomainC/internal/app"
+	"DomainC/registrarclient"
 	"DomainC/scheduler"
 	"DomainC/telegram"
 )
 
 const (
-	expiringFile = "expiring_domains.txt"
-	failedFile   = "failed_domains.txt"
+	expiringFile      = "expiring_domains.txt"
+	failedFile        = "failed_domains.txt"
+	expiryCacheTarget = "expiry_cache.txt"
 )
 
 func main() {
@@ -28,7 +30,7 @@ func main() {
 	defer cancel()
 
 	cfClient := cfclient.NewClient()
-
+	registrarManager := registrarclient.NewManager(nil, config.Cfg.Registrars)
 	var sender telegram.Sender
 	botSender, err := telegram.NewBotSender(
 		config.Cfg.Telegram.BotToken,
@@ -45,7 +47,7 @@ func main() {
 		sender = botSender
 	}
 
-	commandHandler := telegram.NewCommandHandler(cfClient, sender, config.Cfg.CloudflareAccounts, int64(config.Cfg.Telegram.ChatID))
+	commandHandler := telegram.NewCommandHandler(cfClient, registrarManager, sender, config.Cfg.CloudflareAccounts, int64(config.Cfg.Telegram.ChatID))
 
 	go func() {
 		if err := sender.StartListener(ctx, callback.HandleCallback, commandHandler.HandleMessage); err != nil {
@@ -53,7 +55,7 @@ func main() {
 		}
 	}()
 
-	repository := domain.NewFileRepository(config.Cfg.DomainFiles, expiringFile, failedFile)
+	repository := domain.NewFileRepository(config.Cfg.DomainFiles, expiringFile, failedFile, expiryCacheTarget)
 	service := domain.NewService(cfClient, repository)
 
 	collector := &app.Collector{Service: service, Accounts: config.Cfg.CloudflareAccounts}

@@ -1,13 +1,8 @@
-appst0res.us|Shengshi6688|
-ergw.my|Shengshi6688|
 galaxygame.it.com|Shengshi6688|
 gamestore.us.com|Shengshi6688|
-playstores.us|Shengshi6688|
 playstore.us.com|Shengshi6688|
-vegasplaygame.us|Shengshi6688|
 vpbet1.ph|Shengshi6688|
 vpbet2.ph|Shengshi6688|
-vpbet2.us|Shengshi6688|
 vpbet3.ph|Shengshi6688|
 vpbet.br.com|Shengshi6688|
 vpbet.jpn.com|Shengshi6688|
@@ -15,13 +10,11 @@ vpbet.sa.com|Shengshi6688|
 vpgame1.us.com|Shengshi6688|
 vpgame2.us.com|Shengshi6688|
 vpgame3.us.com|Shengshi6688|
-vpslot4.us|Shengshi6688|
 gamestores.us.com|yuang6496|
 vp88.ph|yuang6496|
 vpbet188.ph|yuang6496|
 vpbet1.us.com|yuang6496|
 vpbet5.ph|yuang6496|
-vpbet5.us|yuang6496|
 vpbet6.ph|yuang6496|
 vpbet7.ph|yuang6496|
 vpbet88.ph|yuang6496|
@@ -29,7 +22,6 @@ vpbet8.ph|yuang6496|
 vpbet.eu.com|yuang6496|
 vpbet.ph|yuang6496|
 vpbet.us.com|yuang6496|
-vpgame6.us|yuang6496|
 vpgame.us.com|yuang6496|
 vpjili.ph|yuang6496|
 vpwin.ph|yuang6496|

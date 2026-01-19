@@ -9,13 +9,14 @@ import (
 
 // FileRepository 基于文件的域名仓库实现。
 type FileRepository struct {
-	sourcesPaths   []string
-	expiringTarget string
-	failureTarget  string
+	sourcesPaths      []string
+	expiringTarget    string
+	failureTarget     string
+	expiryCacheTarget string
 }
 
-func NewFileRepository(sources []string, expiringPath, failurePath string) *FileRepository {
-	return &FileRepository{sourcesPaths: sources, expiringTarget: expiringPath, failureTarget: failurePath}
+func NewFileRepository(sources []string, expiringPath, failurePath, expiryCachePath string) *FileRepository {
+	return &FileRepository{sourcesPaths: sources, expiringTarget: expiringPath, failureTarget: failurePath, expiryCacheTarget: expiryCachePath}
 }
 
 // LoadSources 读取配置的源文件，每行一个域名，忽略空行和注释。
@@ -102,6 +103,65 @@ func (r *FileRepository) SaveFailures(failures []FailureRecord) error {
 
 	if err := writer.Flush(); err != nil {
 		return fmt.Errorf("刷新失败记录文件失败: %w", err)
+	}
+	return nil
+}
+
+// LoadExpiryCache 读取缓存文件：domain|source|expiry
+func (r *FileRepository) LoadExpiryCache() ([]DomainSource, error) {
+	b, err := os.ReadFile(r.expiryCacheTarget)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("读取到期缓存文件失败: %w", err)
+	}
+
+	lines := strings.Split(string(b), "\n")
+	out := make([]DomainSource, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) < 3 {
+			continue
+		}
+		out = append(out, DomainSource{
+			Domain: strings.TrimSpace(parts[0]),
+			Source: strings.TrimSpace(parts[1]),
+			Expiry: strings.TrimSpace(parts[2]),
+		})
+	}
+	return out, nil
+}
+
+// SaveExpiryCache 覆盖写缓存文件：domain|source|expiry
+func (r *FileRepository) SaveExpiryCache(domains []DomainSource) error {
+	file, err := os.Create(r.expiryCacheTarget)
+	if err != nil {
+		return fmt.Errorf("创建到期缓存文件失败: %w", err)
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	for _, ds := range domains {
+		if strings.TrimSpace(ds.Domain) == "" || strings.TrimSpace(ds.Source) == "" || strings.TrimSpace(ds.Expiry) == "" {
+			continue
+		}
+		if _, err := writer.WriteString(
+			fmt.Sprintf("%s|%s|%s\n",
+				strings.TrimSpace(ds.Domain),
+				strings.TrimSpace(ds.Source),
+				strings.TrimSpace(ds.Expiry),
+			),
+		); err != nil {
+			return fmt.Errorf("写入到期缓存失败: %w", err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("刷新到期缓存失败: %w", err)
 	}
 	return nil
 }
