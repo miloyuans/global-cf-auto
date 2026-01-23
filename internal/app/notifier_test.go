@@ -46,8 +46,16 @@ func (f *fakeSender) SendDocumentPath(ctx context.Context, filepath string, capt
 	f.messages = append(f.messages, "DOC:"+filepath+"|"+caption)
 	return nil
 }
-
-func (f *fakeSender) StartListener(ctx context.Context, handleCallback func(data string, user *tgbotapi.User), handleMessage func(msg *tgbotapi.Message)) error {
+func (f *fakeSender) EditButtons(ctx context.Context, chatID int64, messageID int, buttons [][]telegram.Button) error {
+	return nil
+}
+func (f *fakeSender) ClearButtons(ctx context.Context, chatID int64, messageID int) error {
+	return nil
+}
+func (f *fakeSender) AnswerCallback(ctx context.Context, callbackID, text string) error {
+	return nil
+}
+func (f *fakeSender) StartListener(ctx context.Context, handleCallback func(cb *tgbotapi.CallbackQuery), handleMessage func(msg *tgbotapi.Message)) error {
 	<-ctx.Done()
 	return nil
 }
@@ -90,6 +98,21 @@ func (f *fakeCF) CreateOriginCertificate(ctx context.Context, account config.CF,
 	return cfclient.OriginCert{}, nil
 }
 func (f *fakeCF) ListOriginCACertificates(ctx context.Context, account config.CF) ([]cfclient.OriginCACertInfo, error) {
+	return nil, nil
+}
+func (f *fakeCF) ListCustomLists(ctx context.Context, account config.CF) ([]cloudflare.List, error) {
+	return nil, nil
+}
+func (f *fakeCF) GetCustomList(ctx context.Context, account config.CF, listID string) (cloudflare.List, error) {
+	return cloudflare.List{}, nil
+}
+func (f *fakeCF) ListCustomListItems(ctx context.Context, account config.CF, listID string) ([]cloudflare.ListItem, error) {
+	return nil, nil
+}
+func (f *fakeCF) CreateCustomListItem(ctx context.Context, account config.CF, listID string, ip string, comment string) ([]cloudflare.ListItem, error) {
+	return nil, nil
+}
+func (f *fakeCF) DeleteCustomListItem(ctx context.Context, account config.CF, listID string, itemID string) ([]cloudflare.ListItem, error) {
 	return nil, nil
 }
 

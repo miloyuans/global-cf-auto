@@ -37,6 +37,11 @@ func (h *CommandHandler) HandleMessage(msg *tgbotapi.Message) {
 		return
 	}
 	if !msg.IsCommand() {
+		if msg.From != nil && msg.Text != "" {
+			if h.handlePendingIPListAdd(msg.Text, msg.From.ID) {
+				return
+			}
+		}
 		return
 	}
 	h.operator = msg.From
@@ -66,6 +71,8 @@ func (h *CommandHandler) HandleMessage(msg *tgbotapi.Message) {
 		go h.handleCheckCFCommand(args)
 	case "deldns":
 		go h.handleDelDNSCommand(args)
+	case "iplist":
+		go h.handleIPListCommand(args)
 	}
 
 }

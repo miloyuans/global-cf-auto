@@ -65,6 +65,11 @@ type Client interface {
 	CreateOriginCertificate(ctx context.Context, account config.CF, hostnames []string) (OriginCert, error)
 	ListOriginCACertificates(ctx context.Context, account config.CF) ([]OriginCACertInfo, error)
 	PurgeZoneCache(ctx context.Context, account config.CF, zoneID string) error
+	ListCustomLists(ctx context.Context, account config.CF) ([]cloudflare.List, error)
+	GetCustomList(ctx context.Context, account config.CF, listID string) (cloudflare.List, error)
+	ListCustomListItems(ctx context.Context, account config.CF, listID string) ([]cloudflare.ListItem, error)
+	CreateCustomListItem(ctx context.Context, account config.CF, listID string, ip string, comment string) ([]cloudflare.ListItem, error)
+	DeleteCustomListItem(ctx context.Context, account config.CF, listID string, itemID string) ([]cloudflare.ListItem, error)
 }
 
 type apiClient struct{}
@@ -694,4 +699,147 @@ func (c *apiClient) ListOriginCACertificates(ctx context.Context, account config
 		})
 	}
 	return out, nil
+}
+func (c *apiClient) ListCustomLists(ctx context.Context, account config.CF) ([]cloudflare.List, error) {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	api, err := cloudflare.NewWithAPIToken(account.APIToken)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 Cloudflare 客户端失败 [%s]: %v", account.Label, err)
+	}
+
+	accountID, err := c.GetAccountID(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+
+	lists, err := api.ListLists(ctx, cloudflare.AccountIdentifier(accountID), cloudflare.ListListsParams{})
+	if err != nil {
+		return nil, fmt.Errorf("列出账号 %s Custom Lists 失败: %v", account.Label, err)
+	}
+
+	var out []cloudflare.List
+	for _, list := range lists {
+		if list.Kind == cloudflare.ListTypeIP {
+			out = append(out, list)
+		}
+	}
+	return out, nil
+}
+
+func (c *apiClient) GetCustomList(ctx context.Context, account config.CF, listID string) (cloudflare.List, error) {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	api, err := cloudflare.NewWithAPIToken(account.APIToken)
+	if err != nil {
+		return cloudflare.List{}, fmt.Errorf("初始化 Cloudflare 客户端失败 [%s]: %v", account.Label, err)
+	}
+	accountID, err := c.GetAccountID(ctx, account)
+	if err != nil {
+		return cloudflare.List{}, err
+	}
+
+	list, err := api.GetList(ctx, cloudflare.AccountIdentifier(accountID), listID)
+	if err != nil {
+		return cloudflare.List{}, fmt.Errorf("获取 Custom List 失败 [%s]: %v", account.Label, err)
+	}
+	return list, nil
+}
+
+func (c *apiClient) ListCustomListItems(ctx context.Context, account config.CF, listID string) ([]cloudflare.ListItem, error) {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	if strings.TrimSpace(listID) == "" {
+		return nil, errors.New("listID is empty")
+	}
+
+	api, err := cloudflare.NewWithAPIToken(account.APIToken)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 Cloudflare 客户端失败 [%s]: %v", account.Label, err)
+	}
+
+	accountID, err := c.GetAccountID(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+
+	items, err := api.ListListItems(ctx, cloudflare.AccountIdentifier(accountID), cloudflare.ListListItemsParams{
+		ID:      listID,
+		PerPage: 100,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("列出 Custom List 条目失败 [%s]: %v", account.Label, err)
+	}
+	return items, nil
+}
+
+func (c *apiClient) CreateCustomListItem(ctx context.Context, account config.CF, listID string, ip string, comment string) ([]cloudflare.ListItem, error) {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	if strings.TrimSpace(listID) == "" {
+		return nil, errors.New("listID is empty")
+	}
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return nil, errors.New("ip is empty")
+	}
+
+	api, err := cloudflare.NewWithAPIToken(account.APIToken)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 Cloudflare 客户端失败 [%s]: %v", account.Label, err)
+	}
+
+	accountID, err := c.GetAccountID(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+
+	items, err := api.CreateListItem(ctx, cloudflare.AccountIdentifier(accountID), cloudflare.ListCreateItemParams{
+		ID: listID,
+		Item: cloudflare.ListItemCreateRequest{
+			IP:      &ip,
+			Comment: comment,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("添加 Custom List 条目失败 [%s]: %v", account.Label, err)
+	}
+	return items, nil
+}
+
+func (c *apiClient) DeleteCustomListItem(ctx context.Context, account config.CF, listID string, itemID string) ([]cloudflare.ListItem, error) {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	if strings.TrimSpace(listID) == "" {
+		return nil, errors.New("listID is empty")
+	}
+	if strings.TrimSpace(itemID) == "" {
+		return nil, errors.New("itemID is empty")
+	}
+
+	api, err := cloudflare.NewWithAPIToken(account.APIToken)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 Cloudflare 客户端失败 [%s]: %v", account.Label, err)
+	}
+
+	accountID, err := c.GetAccountID(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+
+	items, err := api.DeleteListItems(ctx, cloudflare.AccountIdentifier(accountID), cloudflare.ListDeleteItemsParams{
+		ID: listID,
+		Items: cloudflare.ListItemDeleteRequest{Items: []cloudflare.ListItemDeleteItemRequest{
+			{ID: itemID},
+		}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("删除 Custom List 条目失败 [%s]: %v", account.Label, err)
+	}
+	return items, nil
 }

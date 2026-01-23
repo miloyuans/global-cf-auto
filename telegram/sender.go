@@ -14,8 +14,11 @@ import (
 type Sender interface {
 	Send(ctx context.Context, msg string) error
 	SendWithButtons(ctx context.Context, msg string, buttons [][]Button) error
-	StartListener(ctx context.Context, handleCallback func(data string, user *tgbotapi.User), handleMessage func(msg *tgbotapi.Message)) error
+	StartListener(ctx context.Context, handleCallback func(cb *tgbotapi.CallbackQuery), handleMessage func(msg *tgbotapi.Message)) error
 	SendDocumentPath(ctx context.Context, filepath string, caption string) error
+	EditButtons(ctx context.Context, chatID int64, messageID int, buttons [][]Button) error
+	ClearButtons(ctx context.Context, chatID int64, messageID int) error
+	AnswerCallback(ctx context.Context, callbackID, text string) error
 }
 
 type NoopSender struct{}
@@ -27,10 +30,15 @@ func (NoopSender) Send(ctx context.Context, msg string) error { return nil }
 func (NoopSender) SendWithButtons(ctx context.Context, msg string, buttons [][]Button) error {
 	return nil
 }
-func (NoopSender) StartListener(ctx context.Context, handleCallback func(data string, user *tgbotapi.User), handleMessage func(msg *tgbotapi.Message)) error {
+func (NoopSender) StartListener(ctx context.Context, handleCallback func(cb *tgbotapi.CallbackQuery), handleMessage func(msg *tgbotapi.Message)) error {
 	<-ctx.Done()
 	return nil
 }
+func (NoopSender) EditButtons(ctx context.Context, chatID int64, messageID int, buttons [][]Button) error {
+	return nil
+}
+func (NoopSender) ClearButtons(ctx context.Context, chatID int64, messageID int) error { return nil }
+func (NoopSender) AnswerCallback(ctx context.Context, callbackID, text string) error   { return nil }
 
 // BotSender 实现了带简单重试和节流的 Telegram 发送能力。
 type BotSender struct {
@@ -163,7 +171,7 @@ func (s *BotSender) sendWithMarkup(ctx context.Context, msg tgbotapi.MessageConf
 	return nil
 }
 
-func (s *BotSender) StartListener(ctx context.Context, handleCallback func(data string, user *tgbotapi.User), handleMessage func(msg *tgbotapi.Message)) error {
+func (s *BotSender) StartListener(ctx context.Context, handleCallback func(cb *tgbotapi.CallbackQuery), handleMessage func(msg *tgbotapi.Message)) error {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := s.bot.GetUpdatesChan(u)
@@ -171,12 +179,13 @@ func (s *BotSender) StartListener(ctx context.Context, handleCallback func(data 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
 		case up := <-updates:
 			if up.CallbackQuery != nil && handleCallback != nil {
-				handleCallback(up.CallbackQuery.Data, up.CallbackQuery.From)
-				cb := tgbotapi.NewCallback(up.CallbackQuery.ID, "操作已收到")
-				_, _ = s.bot.Request(cb)
+				handleCallback(up.CallbackQuery)
+				_ = s.AnswerCallback(ctx, up.CallbackQuery.ID, "操作已收到")
 			}
+
 			if up.Message != nil && handleMessage != nil {
 				handleMessage(up.Message)
 			}
@@ -230,4 +239,69 @@ func (s *BotSender) SendDocumentPath(ctx context.Context, filepath string, capti
 		}
 	}
 	return nil
+}
+func (s *BotSender) requestWithRetry(ctx context.Context, cfg tgbotapi.Chattable) error {
+	for attempt := 0; attempt <= s.retryTimes; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.rate.C:
+			result := make(chan error, 1)
+
+			reqCtx := ctx
+			cancel := func() {}
+			if s.timeout > 0 {
+				reqCtx, cancel = context.WithTimeout(ctx, s.timeout)
+			}
+
+			go func() {
+				_, err := s.bot.Request(cfg)
+				result <- err
+			}()
+
+			select {
+			case <-reqCtx.Done():
+				cancel()
+				if attempt == s.retryTimes {
+					return fmt.Errorf("telegram request 超时: %w", reqCtx.Err())
+				}
+				continue
+			case err := <-result:
+				cancel()
+				if err == nil {
+					return nil
+				}
+				if attempt == s.retryTimes {
+					return fmt.Errorf("telegram request 失败: %w", err)
+				}
+				time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *BotSender) EditButtons(ctx context.Context, chatID int64, messageID int, buttons [][]Button) error {
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, r := range buttons {
+		var row []tgbotapi.InlineKeyboardButton
+		for _, b := range r {
+			row = append(row, tgbotapi.NewInlineKeyboardButtonData(b.Text, b.CallbackData))
+		}
+		rows = append(rows, row)
+	}
+	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, markup)
+	return s.requestWithRetry(ctx, edit)
+}
+
+func (s *BotSender) ClearButtons(ctx context.Context, chatID int64, messageID int) error {
+	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, tgbotapi.InlineKeyboardMarkup{})
+	return s.requestWithRetry(ctx, edit)
+}
+
+func (s *BotSender) AnswerCallback(ctx context.Context, callbackID, text string) error {
+	cfg := tgbotapi.NewCallback(callbackID, text)
+	cfg.ShowAlert = false
+	return s.requestWithRetry(ctx, cfg)
 }

@@ -36,7 +36,7 @@ func SendTelegramAlertWithButtons(msg string, buttons [][]Button) {
 	}
 }
 
-func StartListener(handleCallback func(data string, user *tgbotapi.User), handleMessage func(msg *tgbotapi.Message)) {
+func StartListener(handleCallback func(cb *tgbotapi.CallbackQuery), handleMessage func(msg *tgbotapi.Message)) {
 	go func() {
 		if err := defaultSender.StartListener(context.Background(), handleCallback, handleMessage); err != nil {
 			log.Printf("Telegram 监听异常: %v", err)
