@@ -65,6 +65,7 @@ func main() {
 		AlertWithin:  app.AlertDaysDuration(config.Cfg.AlertDays),
 		RateLimit:    time.Second,
 		QueryTimeout: 15 * time.Second,
+		Registrar:    registrarManager,
 	}
 	notifier := &app.NotifierService{Sender: sender, CFClient: cfClient, DeleteTimeout: 10 * time.Second}
 	sched := scheduler.NewDailyScheduler()

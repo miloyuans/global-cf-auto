@@ -6,10 +6,14 @@ import (
 	"strings"
 	"time"
 
+	"DomainC/config"
 	"DomainC/domain"
 	"DomainC/tools"
 )
 
+type RegistrarExpiry interface {
+	GetExpireAtForDomain(ctx context.Context, domain string) (config.Registrar, time.Time, error)
+}
 type WhoisClient interface {
 	Query(ctx context.Context, domain string) (string, error)
 }
@@ -20,8 +24,20 @@ type ExpiryCheckerService struct {
 	AlertWithin  time.Duration
 	RateLimit    time.Duration
 	QueryTimeout time.Duration
+	Registrar    RegistrarExpiry
 }
 
+func (c *ExpiryCheckerService) tryRegistrarExpiry(ctx context.Context, domain string) (time.Time, bool) {
+	if c.Registrar == nil {
+		return time.Time{}, false
+	}
+	_, t, err := c.Registrar.GetExpireAtForDomain(ctx, domain)
+	if err != nil {
+		log.Printf("[registrar] registrar_lookup_failed domain=%s err=%v", domain, err)
+		return time.Time{}, false
+	}
+	return t, true
+}
 func cacheKey(ds domain.DomainSource) string {
 	return strings.ToLower(strings.TrimSpace(ds.Domain)) + "|" + strings.ToLower(strings.TrimSpace(ds.Source))
 }
@@ -59,7 +75,7 @@ func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.Domai
 			cacheRepo = cr
 			cached, err := cr.LoadExpiryCache()
 			if err != nil {
-				log.Printf("[expiry] cache_load_failed err=%v", err)
+				log.Printf("[cache-failed] cache_load_failed err=%v", err)
 			} else {
 				cacheMap = make(map[string]string, len(cached))
 				for _, ds := range cached {
@@ -73,7 +89,7 @@ func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.Domai
 					}
 					cacheMap[k] = exp
 				}
-				log.Printf("[expiry] cache_loaded size=%d", len(cacheMap))
+				log.Printf("[cache] cache_loaded size=%d", len(cacheMap))
 			}
 		}
 	}
@@ -130,18 +146,18 @@ func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.Domai
 				if t, err := time.Parse("2006-01-02", strings.TrimSpace(expStr)); err == nil {
 					// 还没到阈值：跳过
 					if time.Until(t) > c.AlertWithin {
-						log.Printf("[expiry] cache_hit_skip domain=%s source=%s expiry=%s", ds.Domain, ds.Source, expStr)
+						log.Printf("[cache_hit_skip] cache_hit_skip domain=%s source=%s expiry=%s", ds.Domain, ds.Source, expStr)
 						continue
 					}
 					// 到阈值：删 cache，触发重查
 					delete(cacheMap, cacheKey(ds))
 					cacheDirty = true
-					log.Printf("[expiry] cache_hit_recheck domain=%s source=%s expiry=%s", ds.Domain, ds.Source, expStr)
+					log.Printf("[cache_hit_recheck] cache_hit_recheck domain=%s source=%s expiry=%s", ds.Domain, ds.Source, expStr)
 				} else {
 					// cache 日期坏了：删掉，重查
 					delete(cacheMap, cacheKey(ds))
 					cacheDirty = true
-					log.Printf("[expiry] cache_bad_recheck domain=%s source=%s expiry=%s", ds.Domain, ds.Source, expStr)
+					log.Printf("[cache_bad_recheck] cache_bad_recheck domain=%s source=%s expiry=%s", ds.Domain, ds.Source, expStr)
 				}
 			}
 		}
@@ -157,20 +173,38 @@ func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.Domai
 
 		// D) 查询 WHOIS / RDAP
 		lookupCtx := ctx
-		cancel := func() {}
+		lookupCancel := func() {}
 		if c.QueryTimeout > 0 {
-			lookupCtx, cancel = context.WithTimeout(ctx, c.QueryTimeout)
+			lookupCtx, lookupCancel = context.WithTimeout(ctx, c.QueryTimeout)
 		}
-
 		result, err := c.Whois.Query(lookupCtx, ds.Domain)
-		cancel()
+		lookupCancel()
 
 		if err != nil {
 			log.Printf("[expiry] lookup_failed domain=%s source=%s", ds.Domain, ds.Source)
-			failures = append(failures, domain.FailureRecord{
-				Domain: ds.Domain,
-				Source: ds.Source,
-			})
+
+			regCtx := ctx
+			regCancel := func() {}
+			if c.QueryTimeout > 0 {
+				regCtx, regCancel = context.WithTimeout(ctx, c.QueryTimeout)
+			}
+			if t, ok := c.tryRegistrarExpiry(regCtx, ds.Domain); ok {
+				regCancel()
+
+				expStr := t.Format("2006-01-02")
+				if cacheMap != nil {
+					cacheMap[cacheKey(ds)] = expStr
+					cacheDirty = true
+				}
+				if time.Until(t) <= c.AlertWithin {
+					ds.Expiry = expStr
+					expiring = append(expiring, ds)
+				}
+				continue
+			}
+			regCancel()
+
+			failures = append(failures, domain.FailureRecord{Domain: ds.Domain, Source: ds.Source})
 			continue
 		}
 
@@ -181,14 +215,26 @@ func (c *ExpiryCheckerService) Check(ctx context.Context, domains []domain.Domai
 		if t, err := time.Parse("2006-01-02", result); err == nil {
 			expiryTime = t
 		} else {
-			// 再从原始文本抽取
 			expiry, ok := tools.ExtractExpiry(result)
 			if !ok {
 				log.Printf("[expiry] extract_failed domain=%s source=%s", ds.Domain, ds.Source)
-				failures = append(failures, domain.FailureRecord{
-					Domain: ds.Domain,
-					Source: ds.Source,
-				})
+
+				if t, ok2 := c.tryRegistrarExpiry(lookupCtx, ds.Domain); ok2 {
+					expStr := t.Format("2006-01-02")
+
+					if cacheMap != nil {
+						cacheMap[cacheKey(ds)] = expStr
+						cacheDirty = true
+					}
+
+					if time.Until(t) <= c.AlertWithin {
+						ds.Expiry = expStr
+						expiring = append(expiring, ds)
+					}
+					continue
+				}
+
+				failures = append(failures, domain.FailureRecord{Domain: ds.Domain, Source: ds.Source})
 				continue
 			}
 

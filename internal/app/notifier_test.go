@@ -115,6 +115,9 @@ func (f *fakeCF) CreateCustomListItem(ctx context.Context, account config.CF, li
 func (f *fakeCF) DeleteCustomListItem(ctx context.Context, account config.CF, listID string, itemID string) ([]cloudflare.ListItem, error) {
 	return nil, nil
 }
+func (f *fakeCF) SetZoneSSLFullStrict(ctx context.Context, account config.CF, zoneID string) error {
+	return nil
+}
 
 func TestNotifierSendsAlertsAndDeletes(t *testing.T) {
 	sender := &fakeSender{}

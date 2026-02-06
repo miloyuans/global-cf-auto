@@ -70,6 +70,7 @@ type Client interface {
 	ListCustomListItems(ctx context.Context, account config.CF, listID string) ([]cloudflare.ListItem, error)
 	CreateCustomListItem(ctx context.Context, account config.CF, listID string, ip string, comment string) ([]cloudflare.ListItem, error)
 	DeleteCustomListItem(ctx context.Context, account config.CF, listID string, itemID string) ([]cloudflare.ListItem, error)
+	SetZoneSSLFullStrict(ctx context.Context, account config.CF, domain string) error
 }
 
 type apiClient struct{}
@@ -667,6 +668,34 @@ func encodeRSAPrivateKeyPEM(priv *rsa.PrivateKey) (string, error) {
 	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}
 	return string(pem.EncodeToMemory(block)), nil
 }
+func (c *apiClient) SetZoneSSLFullStrict(ctx context.Context, account config.CF, zoneID string) error {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	api, err := cloudflare.NewWithAPIToken(account.APIToken)
+	if err != nil {
+		return fmt.Errorf("初始化 Cloudflare 客户端失败 [%s]: %v", account.Label, err)
+	}
+
+	rc := &cloudflare.ResourceContainer{
+		Level:      cloudflare.ZoneRouteLevel,
+		Identifier: zoneID,
+	}
+
+	_, err = api.UpdateZoneSetting(ctx, rc, cloudflare.UpdateZoneSettingParams{
+		Name:  "ssl",
+		Value: "strict",
+	})
+	if err != nil {
+		return fmt.Errorf(
+			"设置 SSL 模式为 Full (Strict) 失败 [%s/%s]: %v",
+			account.Label, zoneID, err,
+		)
+	}
+
+	return nil
+}
+
 func (c *apiClient) ListOriginCACertificates(ctx context.Context, account config.CF) ([]OriginCACertInfo, error) {
 	ctx, cancel := ensureTimeout(ctx)
 	defer cancel()

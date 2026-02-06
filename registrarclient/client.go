@@ -88,6 +88,7 @@ func (c *apiClient) ListDomains(ctx context.Context, registrar config.Registrar)
 }
 
 type namecheapResponse struct {
+	Status          string                   `xml:"Status,attr"`
 	Errors          namecheapErrors          `xml:"Errors"`
 	CommandResponse namecheapCommandResponse `xml:"CommandResponse"`
 }
@@ -100,13 +101,17 @@ type namecheapError struct {
 	Number  string `xml:"Number,attr"`
 	Message string `xml:",chardata"`
 }
-
-type namecheapCommandResponse struct {
-	DomainDNSGetListResult   namecheapGetListResult    `xml:"DomainDNSGetListResult"`
-	DomainDNSSetCustomResult namecheapSetCustomResult  `xml:"DomainDNSSetCustomResult"`
-	DomainGetListResult      namecheapDomainListResult `xml:"DomainGetListResult"`
+type namecheapDomainGetInfoResult struct {
+	DomainName string `xml:"DomainName,attr"`
+	Expires    string `xml:"Expires,attr"`
+	IsExpired  string `xml:"IsExpired,attr"`
 }
-
+type namecheapCommandResponse struct {
+	DomainDNSGetListResult   namecheapGetListResult       `xml:"DomainDNSGetListResult"`
+	DomainDNSSetCustomResult namecheapSetCustomResult     `xml:"DomainDNSSetCustomResult"`
+	DomainGetListResult      namecheapDomainListResult    `xml:"DomainGetListResult"`
+	DomainGetInfoResult      namecheapDomainGetInfoResult `xml:"DomainGetInfoResult"`
+}
 type namecheapGetListResult struct {
 	NameServers []string `xml:"Nameserver"`
 }
@@ -151,8 +156,66 @@ func (c *apiClient) namecheapGetNameServers(ctx context.Context, cfg config.Name
 	}
 	return resp.CommandResponse.DomainDNSGetListResult.NameServers, nil
 }
+func (c *apiClient) namecheapGetExpireAt(ctx context.Context, cfg config.NamecheapConfig, domain string) (time.Time, error) {
+	domain = strings.TrimSuffix(strings.TrimSpace(domain), ".")
+	if domain == "" {
+		return time.Time{}, fmt.Errorf("域名不能为空")
+	}
+
+	params := url.Values{}
+	params.Set("ApiUser", cfg.User)
+	params.Set("ApiKey", cfg.APIKey)
+	params.Set("UserName", cfg.User)
+	params.Set("ClientIp", cfg.ClientIP)
+	params.Set("Command", "namecheap.domains.getInfo")
+	params.Set("DomainName", domain)
+
+	data, err := c.namecheapRequest(ctx, params)
+	if err != nil {
+		return time.Time{}, err
+	}
+	resp, err := parseNamecheapResponse(data)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	exp := strings.TrimSpace(resp.CommandResponse.DomainGetInfoResult.Expires)
+	if exp == "" {
+		return time.Time{}, fmt.Errorf("namecheap 未返回 Expires")
+	}
+
+	t, err := time.Parse(time.RFC3339, exp)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("namecheap Expires 解析失败: %w", err)
+	}
+	return t, nil
+}
+
+func equalStringSliceIgnoreOrder(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := map[string]int{}
+	for _, x := range a {
+		m[strings.ToLower(x)]++
+	}
+	for _, x := range b {
+		k := strings.ToLower(x)
+		if m[k] == 0 {
+			return false
+		}
+		m[k]--
+	}
+	return true
+}
 
 func (c *apiClient) namecheapSetNameServers(ctx context.Context, cfg config.NamecheapConfig, domain string, nameServers []string) error {
+	current, err := c.namecheapGetNameServers(ctx, cfg, domain)
+	if err == nil {
+		if equalStringSliceIgnoreOrder(current, nameServers) {
+			return nil // 已经一致，直接返回
+		}
+	}
 	if len(nameServers) == 0 {
 		return fmt.Errorf("NS 不能为空")
 	}
@@ -235,6 +298,13 @@ func parseNamecheapResponse(data []byte) (namecheapResponse, error) {
 	if err := xml.Unmarshal(data, &resp); err != nil {
 		return resp, fmt.Errorf("namecheap 解析失败: %w", err)
 	}
+
+	if strings.ToUpper(resp.Status) != "OK" {
+		if len(resp.Errors.Items) == 0 {
+			return resp, fmt.Errorf("namecheap 返回非 OK 状态")
+		}
+	}
+
 	if len(resp.Errors.Items) > 0 {
 		var messages []string
 		for _, item := range resp.Errors.Items {
@@ -247,11 +317,9 @@ func parseNamecheapResponse(data []byte) (namecheapResponse, error) {
 				return resp, ErrDomainNotFound
 			}
 		}
-		if len(messages) == 0 {
-			return resp, fmt.Errorf("namecheap 返回错误")
-		}
 		return resp, fmt.Errorf("namecheap 错误: %s", strings.Join(messages, "; "))
 	}
+
 	return resp, nil
 }
 

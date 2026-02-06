@@ -2,8 +2,10 @@ package registrarclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"DomainC/config"
 )
@@ -63,18 +65,67 @@ func (m *Manager) SetNameServersForDomain(ctx context.Context, domain string, na
 	if len(m.registrars) == 0 {
 		return config.Registrar{}, fmt.Errorf("未配置注册商")
 	}
+
 	var lastErr error
 	for _, r := range m.registrarsForDomain(domain) {
-		if err := m.client.SetNameServers(ctx, r, domain, nameServers); err != nil {
-			lastErr = err
+		err := m.client.SetNameServers(ctx, r, domain, nameServers)
+		if err != nil {
+			if errors.Is(err, ErrDomainNotFound) {
+				continue
+			}
+			lastErr = fmt.Errorf("[%s] %w", r.Label, err)
 			continue
 		}
 		return r, nil
 	}
+
 	if lastErr == nil {
-		lastErr = fmt.Errorf("没有可用的注册商")
+		lastErr = fmt.Errorf("未在任何注册商账号下找到该域名")
 	}
 	return config.Registrar{}, lastErr
+}
+func (m *Manager) GetExpireAtForDomain(ctx context.Context, domain string) (config.Registrar, time.Time, error) {
+	if len(m.registrars) == 0 {
+		return config.Registrar{}, time.Time{}, fmt.Errorf("未配置注册商")
+	}
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return config.Registrar{}, time.Time{}, fmt.Errorf("域名不能为空")
+	}
+
+	// 通过 type assertion 使用底层实现，避免改动 Client 接口
+	type namecheapExpireGetter interface {
+		namecheapGetExpireAt(ctx context.Context, cfg config.NamecheapConfig, domain string) (time.Time, error)
+	}
+
+	getter, ok := m.client.(namecheapExpireGetter)
+	if !ok {
+		return config.Registrar{}, time.Time{}, fmt.Errorf("当前 client 不支持获取到期时间")
+	}
+
+	var lastErr error
+	for _, r := range m.registrarsForDomain(domain) {
+		if strings.ToLower(strings.TrimSpace(r.Type)) != "namecheap" || r.Namecheap == nil {
+			continue
+		}
+
+		expAt, err := getter.namecheapGetExpireAt(ctx, *r.Namecheap, domain)
+		if err != nil {
+			// 该账号下没有这个域名：继续尝试下一个账号
+			if errors.Is(err, ErrDomainNotFound) {
+				continue
+			}
+			lastErr = fmt.Errorf("[%s] %w", r.Label, err)
+			continue
+		}
+
+		return r, expAt, nil
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("未在任何 namecheap 账号下找到该域名")
+	}
+	return config.Registrar{}, time.Time{}, lastErr
 }
 
 // GetNameServersForDomain 尝试从注册商读取 NS。

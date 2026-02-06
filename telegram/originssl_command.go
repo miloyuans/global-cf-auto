@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,31 +18,39 @@ import (
 )
 
 func (h *CommandHandler) handleOriginSSLCommand(args []string) {
-	if len(args) < 3 {
+	// /ssl <domain> [aws-alias1] [aws-alias2]
+	if len(args) < 1 {
 		h.sendText(h.originSSLPromptText())
 		return
 	}
 
 	domain := strings.TrimSpace(args[0])
-	mode := strings.TrimSpace(args[1])
-
 	if domain == "" {
 		h.sendText(h.originSSLPromptText())
 		return
 	}
-	awsAlias := strings.TrimSpace(args[2])
-	if awsAlias == "" {
-		h.sendText(h.originSSLPromptText())
-		return
-	}
-	// 必须第二个参数是 "*"
-	if mode != "*" {
-		h.sendText("参数错误：必须使用 *\n\n" + h.originSSLPromptText())
-		return
+
+	// 解析可选 aws aliases（最多 2 个）
+	aliases := make([]string, 0, 2)
+	seen := map[string]struct{}{}
+	for _, a := range args[1:] {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		aliases = append(aliases, a)
+		if len(aliases) == 2 {
+			break
+		}
 	}
 
-	// 自动定位账号：domain 必须是某个账号下的 zone
 	ctx := context.Background()
+
+	// 自动定位账号：domain 必须是某个账号下的 zone
 	acc, err := h.findAccountByDomain(ctx, domain)
 	if err != nil {
 		h.sendText(fmt.Sprintf("无法定位域名所属账号：%v\n\n%s", err, h.originSSLPromptText()))
@@ -51,95 +60,175 @@ func (h *CommandHandler) handleOriginSSLCommand(args []string) {
 	// 固定生成：裸域 + 通配
 	hostnames := []string{domain, "*." + domain}
 
-	// 创建 15 年 Origin CA 证书（你已在 client 里实现）
+	// 创建 15 年 Origin CA 证书
 	cert, err := h.CFClient.CreateOriginCertificate(ctx, *acc, hostnames)
 	if err != nil {
 		h.sendText(fmt.Sprintf("创建源站证书失败: %v", err))
 		return
 	}
+	if _, zone, zerr := h.findZone(strings.ToLower(strings.TrimSpace(domain))); zerr != nil {
+		// 不阻断主流程
+		h.sendText(fmt.Sprintf("⚠️ 已生成源站证书，但查询 Zone 失败，无法设置 SSL 模式为 Full (Strict): %v", zerr))
+	} else {
+		if serr := h.CFClient.SetZoneSSLFullStrict(ctx, *acc, zone.ID); serr != nil {
+			// 不阻断主流程
+			h.sendText(fmt.Sprintf("⚠️ 已生成源站证书，但设置 SSL 模式为 Full (Strict) 失败: %v", serr))
+		} else {
+			h.sendText("✅ 已将 Cloudflare SSL/TLS 加密模式设置为 Full (Strict)。")
+		}
+	}
+	// 可选导入 ACM（0/1/2 个）
+	type importResult struct {
+		alias  string
+		region string
+		arn    string
+		err    error
+	}
+	results := make([]importResult, 0, len(aliases))
 
-	target, ok := config.Cfg.AWSTargets[awsAlias]
-	if !ok {
-		h.sendText(fmt.Sprintf("未知 AWS 目标别名：%s\n\n%s", awsAlias, h.originSSLPromptText()))
-		return
+	for _, awsAlias := range aliases {
+		target, ok := config.Cfg.AWSTargets[awsAlias]
+		if !ok {
+			results = append(results, importResult{
+				alias: awsAlias,
+				err:   fmt.Errorf("未知 AWS 目标别名：%s", awsAlias),
+			})
+			continue
+		}
+		acmArn, e := importToACM(ctx, target, cert.CertificatePEM, cert.PrivateKeyPEM)
+		results = append(results, importResult{
+			alias:  awsAlias,
+			region: target.Region,
+			arn:    acmArn,
+			err:    e,
+		})
 	}
 
-	acmArn, err := importToACM(ctx, target, cert.CertificatePEM, cert.PrivateKeyPEM)
-	if err != nil {
-		h.sendText(fmt.Sprintf("证书已生成，但导入 ACM 失败（%s/%s）: %v", awsAlias, target.Region, err))
-		return
+	// 文本回执（生成 + 可选导入结果）
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("CF源站证书已生成：%s\n账号：%s\nHostnames: %s\n",
+		domain, acc.Label, strings.Join(hostnames, ", "),
+	))
+	if !cert.ExpiresOn.IsZero() {
+		sb.WriteString(fmt.Sprintf("到期：%s\n", cert.ExpiresOn.Format(time.RFC3339)))
 	}
-	h.sendText(fmt.Sprintf("CF源站证书生成并已导入 ACM：%s\nTarget: %s (%s)\nARN: %s\n账号：%s",
-		domain, awsAlias, target.Region, acmArn, acc.Label))
+	if len(results) == 0 {
+		sb.WriteString("\nACM：未导入（未提供 aws alias）。\n")
+	} else {
+		var okLines, failLines []string
+		for _, r := range results {
+			if r.err != nil {
+				if r.region != "" {
+					failLines = append(failLines, fmt.Sprintf("- %s (%s): %v", r.alias, r.region, r.err))
+				} else {
+					failLines = append(failLines, fmt.Sprintf("- %s: %v", r.alias, r.err))
+				}
+				continue
+			}
+			okLines = append(okLines, fmt.Sprintf("- %s (%s):\n %s", r.alias, r.region, r.arn))
+		}
+		sb.WriteString("\nACM 导入结果：\n")
+		if len(okLines) > 0 {
+			sb.WriteString("✅ 成功：\n" + strings.Join(okLines, "\n") + "\n")
+		}
+		if len(failLines) > 0 {
+			sb.WriteString("\n❌ 失败：\n" + strings.Join(failLines, "\n") + "\n")
+		}
+	}
+	h.sendText(sb.String())
 
-	// 输出内容（证书 + 私钥 + CSR）
-	var out bytes.Buffer
-	out.WriteString("### Cloudflare Origin CA Certificate\n")
-	out.WriteString(fmt.Sprintf("Account: %s\n", acc.Label))
-	out.WriteString(fmt.Sprintf("Zone: %s\n", domain))
-	out.WriteString(fmt.Sprintf("Hostnames: %s\n", strings.Join(hostnames, ", ")))
+	// --------- 发回两个文件：cert+csr 与 key ---------
+
+	// (1) cert 文件：头信息 + CERT + CSR（不包含私钥）
+	var certOut bytes.Buffer
+	certOut.WriteString("### Cloudflare Origin CA Certificate\n")
+	certOut.WriteString(fmt.Sprintf("Account: %s\n", acc.Label))
+	certOut.WriteString(fmt.Sprintf("Zone: %s\n", domain))
+	certOut.WriteString(fmt.Sprintf("Hostnames: %s\n", strings.Join(hostnames, ", ")))
 	if cert.ID != "" {
-		out.WriteString(fmt.Sprintf("CertID: %s\n", cert.ID))
+		certOut.WriteString(fmt.Sprintf("CertID: %s\n", cert.ID))
 	}
 	if !cert.ExpiresOn.IsZero() {
-		out.WriteString(fmt.Sprintf("ExpiresOn: %s\n", cert.ExpiresOn.Format(time.RFC3339)))
+		certOut.WriteString(fmt.Sprintf("ExpiresOn: %s\n", cert.ExpiresOn.Format(time.RFC3339)))
 	}
-	out.WriteString("\n")
+	certOut.WriteString("\n")
 
-	out.WriteString("-----BEGIN CERTIFICATE-----\n")
-	out.WriteString(strings.TrimSpace(cert.CertificatePEM))
-	out.WriteString("\n-----END CERTIFICATE-----\n\n")
+	certOut.WriteString("-----BEGIN CERTIFICATE-----\n")
+	certOut.WriteString(strings.TrimSpace(cert.CertificatePEM))
+	certOut.WriteString("\n-----END CERTIFICATE-----\n\n")
 
-	out.WriteString("-----BEGIN PRIVATE KEY-----\n")
-	out.WriteString(strings.TrimSpace(cert.PrivateKeyPEM))
-	out.WriteString("\n-----END PRIVATE KEY-----\n\n")
+	if strings.TrimSpace(cert.CSRPEM) != "" {
+		certOut.WriteString("-----BEGIN CERTIFICATE REQUEST-----\n")
+		certOut.WriteString(strings.TrimSpace(cert.CSRPEM))
+		certOut.WriteString("\n-----END CERTIFICATE REQUEST-----\n")
+	}
 
-	out.WriteString("-----BEGIN CERTIFICATE REQUEST-----\n")
-	out.WriteString(strings.TrimSpace(cert.CSRPEM))
-	out.WriteString("\n-----END CERTIFICATE REQUEST-----\n")
+	// (2) key 文件：仅私钥
+	var keyOut bytes.Buffer
+	keyOut.WriteString("-----BEGIN PRIVATE KEY-----\n")
+	keyOut.WriteString(strings.TrimSpace(cert.PrivateKeyPEM))
+	keyOut.WriteString("\n-----END PRIVATE KEY-----\n")
 
-	// 文件名
-	filename := fmt.Sprintf("origin-ca-%s-%s.pem", domain, time.Now().Format("20060102-150405"))
-	filename = sanitizeFilename(filename)
+	ts := time.Now().Format("20060102-150405")
+	certFilename := sanitizeFilename(fmt.Sprintf("origin-ca-%s-%s-cert.pem", domain, ts))
+	keyFilename := sanitizeFilename(fmt.Sprintf("origin-ca-%s-%s-key.pem", domain, ts))
 
-	// 写临时文件并发送
+	certPath, err := writeTempAndMove(certFilename, certOut.Bytes(), 0644)
+	if err != nil {
+		h.sendText(fmt.Sprintf("写入证书文件失败: %v", err))
+		return
+	}
+	defer os.Remove(certPath)
+
+	keyPath, err := writeTempAndMove(keyFilename, keyOut.Bytes(), 0600)
+	if err != nil {
+		h.sendText(fmt.Sprintf("写入私钥文件失败: %v", err))
+		return
+	}
+	defer os.Remove(keyPath)
+
+	certCaption := "📄 Cloudflare Origin CA 证书（Certificate + CSR）"
+	if !cert.ExpiresOn.IsZero() {
+		certCaption = fmt.Sprintf("📄 Cloudflare Origin CA 证书（Certificate + CSR）\n到期：%s", cert.ExpiresOn.Format(time.RFC3339))
+	}
+	keyCaption := "🔐 Cloudflare Origin CA 私钥（Private Key）"
+
+	if err := h.Sender.SendDocumentPath(context.Background(), certPath, certCaption); err != nil {
+		h.sendText(fmt.Sprintf("发送证书文件失败: %v", err))
+		return
+	}
+	if err := h.Sender.SendDocumentPath(context.Background(), keyPath, keyCaption); err != nil {
+		h.sendText(fmt.Sprintf("发送私钥文件失败: %v", err))
+		return
+	}
+
+	h.sendText(fmt.Sprintf("✅ 源站证书处理完成：%s（账号：%s）", domain, acc.Label))
+}
+
+// 写临时文件并移动到 /tmp（最终路径），返回最终路径
+func writeTempAndMove(filename string, data []byte, perm os.FileMode) (string, error) {
 	tmpFile, err := os.CreateTemp("", "origin-ca-*.pem")
 	if err != nil {
-		h.sendText(fmt.Sprintf("创建临时文件失败: %v", err))
-		return
+		return "", err
 	}
 	tmpPath := tmpFile.Name()
 
-	// 用完即删
 	defer func() {
 		_ = tmpFile.Close()
 		_ = os.Remove(tmpPath)
 	}()
 
-	// 私钥文件尽量收紧权限
-	// _ = os.Chmod(tmpPath, 0600)
+	_ = os.Chmod(tmpPath, perm)
 
-	// if _, err := tmpFile.Write(out.Bytes()); err != nil {
-	// 	h.sendText(fmt.Sprintf("写入临时文件失败: %v", err))
-	// 	return
-	// }
-	// _ = tmpFile.Sync()
+	if _, err := tmpFile.Write(data); err != nil {
+		return "", err
+	}
+	_ = tmpFile.Sync()
 
-	// finalPath := filepath.Join(os.TempDir(), filename)
-	// _ = os.Rename(tmpPath, finalPath)
-	// tmpPath = finalPath
+	finalPath := filepath.Join(os.TempDir(), filename)
+	_ = os.Rename(tmpPath, finalPath)
 
-	// caption := "🔐 Cloudflare Origin CA 证书（含私钥）"
-	// if !cert.ExpiresOn.IsZero() {
-	// 	caption = fmt.Sprintf("🔐 Cloudflare Origin CA 证书（含私钥）\n到期：%s", cert.ExpiresOn.Format(time.RFC3339))
-	// }
-
-	// if err := h.Sender.SendDocumentPath(context.Background(), tmpPath, caption); err != nil {
-	// 	h.sendText(fmt.Sprintf("发送证书文件失败: %v", err))
-	// 	return
-	// }
-
-	// h.sendText(fmt.Sprintf("✅ 源站证书生成完成：%s（账号：%s）", domain, acc.Label))
+	return finalPath, nil
 }
 
 // 提示文本
