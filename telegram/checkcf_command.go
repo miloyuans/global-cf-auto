@@ -65,6 +65,17 @@ func (h *CommandHandler) handleCheckCFCommand(args []string) {
 		if inactive == 0 {
 			sb.WriteString("- 未发现状态异常的域名\n")
 		}
+		abuseCount, err := h.CFClient.GetAbuseReportCount(ctx, acc)
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("- 滥用报告检查失败: %v\n", err))
+			continue
+		}
+
+		if abuseCount > 0 {
+			sb.WriteString(fmt.Sprintf("- 当前账号存在滥用报告: %d\n", abuseCount))
+			continue
+		}
+		sb.WriteString("- 未发现滥用报告\n")
 	}
 
 	h.sendText(sb.String())

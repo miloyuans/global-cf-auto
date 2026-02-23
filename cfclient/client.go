@@ -6,10 +6,14 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -71,9 +75,22 @@ type Client interface {
 	CreateCustomListItem(ctx context.Context, account config.CF, listID string, ip string, comment string) ([]cloudflare.ListItem, error)
 	DeleteCustomListItem(ctx context.Context, account config.CF, listID string, itemID string) ([]cloudflare.ListItem, error)
 	SetZoneSSLFullStrict(ctx context.Context, account config.CF, domain string) error
+	GetAbuseReportCount(ctx context.Context, account config.CF) (int, error)
 }
 
 type apiClient struct{}
+
+type abuseReportsResponse struct {
+	ResultInfo struct {
+		TotalCount int `json:"total_count"`
+	} `json:"result_info"`
+	Result json.RawMessage `json:"result"`
+	Errors []struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"errors"`
+	Success bool `json:"success"`
+}
 
 // NewClient 返回默认的 Cloudflare API 客户端实现
 func NewClient() Client {
@@ -90,6 +107,140 @@ type DNSRecordParams struct {
 	Content string
 	Proxied bool
 	TTL     int
+}
+
+func truncateForLog(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
+}
+func (c *apiClient) GetAbuseReportCount(ctx context.Context, account config.CF) (int, error) {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	accountID, err := c.GetAccountID(ctx, account)
+	if err != nil {
+		return 0, err
+	}
+
+	endpoints := []string{
+		fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/abuse-reports", accountID),
+	}
+
+	var lastErr error
+	for _, baseURL := range endpoints {
+		q := url.Values{}
+		// q.Set("status", "open")
+		q.Set("page", "1")
+		q.Set("per_page", "1")
+		endpoint := baseURL + "?" + q.Encode()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return 0, fmt.Errorf("构建滥用报告请求失败 [%s]: %v", account.Label, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+account.APIToken)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("查询滥用报告失败 [%s]: %v", account.Label, err)
+			continue
+		}
+
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("读取滥用报告响应失败 [%s]: %v", account.Label, readErr)
+			continue
+		}
+
+		log.Printf("[GetAbuseReportCount] account=%s endpoint=%s status=%d body=%s", account.Label, endpoint, resp.StatusCode, truncateForLog(string(body), 4096))
+
+		var result abuseReportsResponse
+		decodeErr := json.Unmarshal(body, &result)
+		if decodeErr != nil {
+			lastErr = fmt.Errorf("解析滥用报告响应失败 [%s]: %v", account.Label, decodeErr)
+			continue
+		}
+
+		if resp.StatusCode >= http.StatusBadRequest {
+			detail := ""
+			if len(result.Errors) > 0 {
+				detail = result.Errors[0].Message
+			}
+			lastErr = fmt.Errorf("查询滥用报告失败 [%s]: HTTP %d %s", account.Label, resp.StatusCode, strings.TrimSpace(detail))
+			continue
+		}
+
+		if !result.Success {
+			detail := ""
+			if len(result.Errors) > 0 {
+				detail = result.Errors[0].Message
+			}
+			lastErr = fmt.Errorf("查询滥用报告失败 [%s]: %s", account.Label, strings.TrimSpace(detail))
+			continue
+		}
+
+		if result.ResultInfo.TotalCount > 0 {
+			return result.ResultInfo.TotalCount, nil
+		}
+		count, parseErr := parseAbuseResultCount(result.Result)
+		if parseErr != nil {
+			lastErr = fmt.Errorf("解析滥用报告结果失败 [%s]: %v", account.Label, parseErr)
+			continue
+		}
+		return count, nil
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("查询滥用报告失败 [%s]: 未知错误", account.Label)
+	}
+	return 0, lastErr
+}
+func parseAbuseResultCount(raw json.RawMessage) (int, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return 0, nil
+	}
+
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return len(arr), nil
+	}
+
+	var obj struct {
+		Count      *int              `json:"count"`
+		Total      *int              `json:"total"`
+		TotalCount *int              `json:"total_count"`
+		Reports    []json.RawMessage `json:"reports"`
+		Items      []json.RawMessage `json:"items"`
+		Result     []json.RawMessage `json:"result"`
+		Data       []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return 0, err
+	}
+
+	switch {
+	case obj.Count != nil:
+		return *obj.Count, nil
+	case obj.Total != nil:
+		return *obj.Total, nil
+	case obj.TotalCount != nil:
+		return *obj.TotalCount, nil
+	case len(obj.Reports) > 0:
+		return len(obj.Reports), nil
+	case len(obj.Items) > 0:
+		return len(obj.Items), nil
+	case len(obj.Result) > 0:
+		return len(obj.Result), nil
+	case len(obj.Data) > 0:
+		return len(obj.Data), nil
+	default:
+		return 0, nil
+	}
 }
 
 // GetAccountID 获取指定账户的 Account ID（取第一个）
@@ -396,12 +547,7 @@ func fqdn(name, zone string) string {
 	return strings.ToLower(name) + "." + zone
 }
 
-func (c *apiClient) UpsertDNSRecord(
-	ctx context.Context,
-	account config.CF,
-	domain string,
-	params DNSRecordParams,
-) (cloudflare.DNSRecord, error) {
+func (c *apiClient) UpsertDNSRecord(ctx context.Context, account config.CF, domain string, params DNSRecordParams) (cloudflare.DNSRecord, error) {
 	ctx, cancel := ensureTimeout(ctx)
 	defer cancel()
 
