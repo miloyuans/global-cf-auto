@@ -118,7 +118,9 @@ func (f *fakeCF) DeleteCustomListItem(ctx context.Context, account config.CF, li
 func (f *fakeCF) SetZoneSSLFullStrict(ctx context.Context, account config.CF, zoneID string) error {
 	return nil
 }
-
+func (f *fakeCF) GetAbuseReportCount(ctx context.Context, account config.CF) (int, error) {
+	return 0, nil
+}
 func TestNotifierSendsAlertsAndDeletes(t *testing.T) {
 	sender := &fakeSender{}
 	cf := &fakeCF{}

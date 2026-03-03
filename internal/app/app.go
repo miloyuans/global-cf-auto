@@ -65,7 +65,7 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 
-	run()
+	// run()
 
 	a.Scheduler.ScheduleDaily(ctx, a.AlertHour, a.AlertMin, func() {
 		log.Printf("开始计划任务: %02d:%02d", a.AlertHour, a.AlertMin)

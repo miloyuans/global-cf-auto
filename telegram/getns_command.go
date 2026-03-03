@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"DomainC/config"
 	"context"
 	"fmt"
 	"strings"
@@ -8,24 +9,27 @@ import (
 
 func (h *CommandHandler) handleGetNSCommand(args []string) {
 	if len(args) < 1 {
-		h.sendText("用法: /getns <domain1.com> [domain2.com] [domain3.com] ...")
+		h.sendText("用法: /getns <domain1.com> [domain2.com] ... <accountLabel>")
 		return
 	}
 
-	account := h.defaultAccount()
-	if account == nil {
+	if len(h.Accounts) == 0 {
 		h.sendText("未配置可用的 Cloudflare 账号，无法添加域名。")
 		return
 	}
 
-	// 逐个处理域名（不要并发，方便日志/输出有序，也避免 CF/注册商限速）
-	for _, raw := range args {
+	domains, selected, selectorErr := h.parseGetNSDomainsAndAccount(args)
+	if selectorErr != nil {
+		h.sendText(selectorErr.Error())
+		return
+	}
+
+	for _, raw := range domains {
 		domain := normalizeDomain(raw)
 		if domain == "" {
 			continue
 		}
 
-		// 1) 先找是否已经在 CF
 		if acc, zone, err := h.findZone(domain); err == nil {
 			h.sendText(fmt.Sprintf(
 				"域名 %s 已在账号 %s 下, 无需再次添加到CF, NS:\n%s",
@@ -33,29 +37,64 @@ func (h *CommandHandler) handleGetNSCommand(args []string) {
 				acc.Label,
 				strings.Join(zone.NameServers, "\n"),
 			))
-
-			// 已存在也尝试同步注册商（可选：如果你不想同步，把下面这行删掉即可）
 			h.setRegistrarNameServers(domain, zone.NameServers)
 			continue
 		}
 
-		// 2) 不存在则创建 Zone
-		zone, err := h.CFClient.CreateZone(context.Background(), *account, domain)
+		if selected == nil {
+			h.sendText(fmt.Sprintf("域名 %s 不在任何 Cloudflare 账号中。\n%s", domain, h.getNSPromptText()))
+			continue
+		}
+
+		zone, err := h.CFClient.CreateZone(context.Background(), *selected, domain)
 		if err != nil {
-			h.sendText(fmt.Sprintf("添加域名失败: %v, %s---%s", err, domain, account.Label))
+			h.sendText(fmt.Sprintf("添加域名失败: %v, %s---%s", err, domain, selected.Label))
 			continue
 		}
 
 		h.sendText(fmt.Sprintf(
 			"域名 %s 已经加到账号 %s，NS 请设置为:\n%s",
 			zone.Name,
-			account.Label,
+			selected.Label,
 			strings.Join(zone.NameServers, "\n"),
 		))
 
-		// 3) 同步到注册商（注册商可能不同：由 RegistrarManager 根据 domain 自己路由）
 		h.setRegistrarNameServers(domain, zone.NameServers)
 	}
+}
+
+func (h *CommandHandler) parseGetNSDomainsAndAccount(args []string) ([]string, *config.CF, error) {
+	if len(args) == 0 {
+		return nil, nil, fmt.Errorf("用法: /getns <domain1.com> [domain2.com] ... <accountLabel>")
+	}
+
+	last := strings.TrimSpace(args[len(args)-1])
+	if acc := h.getAccountByLabel(last); acc != nil {
+		domains := args[:len(args)-1]
+		if len(domains) == 0 {
+			return nil, nil, fmt.Errorf("请至少提供一个域名。\n%s", h.getNSPromptText())
+		}
+		return domains, acc, nil
+	}
+
+	return args, nil, nil
+}
+
+func (h *CommandHandler) getNSPromptText() string {
+	if len(h.Accounts) == 0 {
+		return "未配置可用的 Cloudflare 账号，无法添加域名。"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("请选择要添加域名的 Cloudflare 账号（域名若已存在将直接返回 NS）：\n")
+	for _, a := range h.Accounts {
+		if strings.TrimSpace(a.Label) == "" {
+			continue
+		}
+		sb.WriteString("- " + a.Label + "\n")
+	}
+	sb.WriteString("\n用法：\n/getns <domain> <账号标签>\n示例：\n/getns example.com acc-a")
+	return sb.String()
 }
 
 func normalizeDomain(s string) string {
